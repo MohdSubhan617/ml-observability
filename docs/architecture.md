@@ -1,0 +1,116 @@
+# ML Monitoring Triage Agent
+
+## 1. Objective
+
+Build a local-first, production-oriented ML monitoring service that detects data-quality failures and feature-distribution drift, converts detections into evidence-backed incidents, and recommends investigation steps.
+
+The initial release uses synthetic datasets. It requires no cloud credentials, proprietary data, or external LLM API.
+
+## 2. Scope
+
+### In scope
+
+- Validate reference and current datasets.
+- Detect missing values, unexpected columns, and invalid input conditions.
+- Detect numerical feature drift using a configurable statistical method.
+- Generate structured incidents with severity, evidence, and recommended actions.
+- Expose monitoring and triage through a FastAPI service.
+- Provide deterministic tests, reproducible evaluation scenarios, and benchmarks.
+- Log useful operational information without exposing dataset contents unnecessarily.
+
+### Out of scope for the first release
+
+- Automatically changing, retraining, or deploying models.
+- Connecting to production customer systems.
+- Claiming that drift necessarily means model performance has degraded.
+- Depending on an external LLM to detect anomalies.
+- Building a dashboard before the underlying monitoring pipeline is validated.
+
+## 3. Proposed architecture
+
+1. **Input validation:** validate dataset structure, supported data types, minimum sample sizes, and configuration.
+2. **Monitoring engine:** calculate data-quality metrics and feature-distribution drift.
+3. **Evidence builder:** record observed values, reference values, thresholds, and affected features.
+4. **Triage engine:** assign severity and generate recommendations from explicit, testable rules.
+5. **API layer:** expose validated request and response contracts through FastAPI.
+6. **Evaluation suite:** measure detection quality, false-positive rate, and runtime on controlled scenarios.
+
+Detection logic must remain independent of the API layer so it can be tested and reused directly.
+
+## 4. Initial technical choices
+
+- Python 3.13.
+- FastAPI for the HTTP interface.
+- Pydantic for configuration and request/response validation.
+- pandas and SciPy for tabular analysis and statistical tests.
+- pytest for automated tests.
+- Ruff for linting and formatting.
+- Synthetic, seeded datasets for reproducible evaluation.
+
+Dependency versions will be pinned or constrained after compatibility checks.
+
+## 5. Detection behavior
+
+The first release will cover:
+
+- Missing-value and schema checks.
+- Numerical feature drift using the two-sample Kolmogorov–Smirnov test, with configurable significance thresholds.
+- Explicit handling of insufficient samples and unsupported feature types.
+- Multiple-testing considerations when evaluating multiple features.
+
+Statistical significance alone will not determine incident severity. The system should also consider the magnitude of observed changes and the configured operational policy.
+
+## 6. Incident contract
+
+Each incident should include:
+
+- A stable incident identifier.
+- A detector and incident category.
+- Affected feature or dataset scope.
+- Severity and status.
+- Observed metrics and applicable thresholds.
+- Evidence explaining why the incident was generated.
+- Recommended investigation steps.
+- Limitations or uncertainty where the evidence is insufficient.
+
+Recommendations must be traceable to observed evidence. The system must not claim a confirmed root cause when it has only detected an association or distribution change.
+
+## 7. Evaluation plan
+
+Create reproducible scenarios for:
+
+- Clean reference and current datasets.
+- Injected missing values.
+- Numerical feature shifts of varying magnitude.
+- Schema changes.
+- Insufficient samples and invalid inputs.
+
+Measure:
+
+- Detection precision and recall on labeled scenarios.
+- False-positive rate on clean scenarios.
+- Detection behavior across shift magnitudes.
+- Runtime as dataset size and feature count increase.
+- API correctness and error handling.
+
+Thresholds and expected results must be documented and justified by the evaluation setup.
+
+## 8. Reliability and security
+
+- Reject malformed requests with clear, structured errors.
+- Avoid logging raw records, secrets, or unnecessary sensitive values.
+- Keep processing deterministic where practical.
+- Set sensible input limits and timeouts at the API boundary.
+- Test failure paths, not only successful requests.
+- Do not perform automatic production remediation.
+
+## 9. Definition of done
+
+- The application runs locally from documented instructions.
+- Automated tests pass.
+- Linting and formatting checks pass.
+- Evaluation results are reproducible and documented.
+- Invalid inputs fail safely.
+- API behavior is covered by tests.
+- Documentation describes limitations and operational trade-offs.
+- The final changes are reviewed, committed, pushed, and verified on GitHub.
