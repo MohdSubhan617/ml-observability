@@ -59,12 +59,21 @@ python -m pip install -e ".[dev]"
 ### 3. Run the API
 
 ```powershell
-uvicorn ml_observability.api:app --reload
+uvicorn ml_observability.app:app --reload
 ```
 
 The interactive API documentation is available at:
 
 - http://127.0.0.1:8000/docs
+
+The request body is limited to 2,000,000 bytes by default. Set
+`ML_OBSERVABILITY_MAX_REQUEST_BYTES` to a positive integer to change this limit.
+Each dataset accepts 1–10,000 records, at most 100 columns per record, column names
+up to 128 characters, and string values up to 10,000 characters. Oversized bodies
+return HTTP 413; invalid dataset dimensions return HTTP 422. Configure a matching
+or stricter body limit at the reverse proxy when deploying behind one.
+Record, column, and string limits are independent maxima; the request-body cap may
+be reached first. Set Uvicorn's `--limit-concurrency` for the deployment's capacity.
 
 ### 4. Run automated tests and quality checks
 
@@ -165,7 +174,7 @@ In the no-drift scenario, there were eight false-positive feature predictions am
 
 #### Interpretation
 
-The detector was highly sensitive to the tested location shift at this sample size. Detection recall was substantially lower for variance increases and heavy-tailed data, while the tested skewed distribution had intermediate-to-high recall.
+The detector was highly sensitive to the tested location shift at this sample size. Detection recall was substantially lower for variance increases and heavy-tailed data, while the tested skewed distribution had intermediate-to-high recall. This is an observed limitation of the two-sample KS test in these scenarios; do not treat the detector as a general-purpose guarantee for every form of drift.
 
 These results demonstrate that detection power depends on the nature of the distribution change, not only on sample size and significance level. A detector that is sensitive to location shifts may be less sensitive to other distributional changes.
 

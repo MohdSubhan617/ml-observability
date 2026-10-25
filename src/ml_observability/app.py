@@ -1,10 +1,14 @@
 """FastAPI application entry point."""
 
+import os
 from typing import Any
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ml_observability.drift import detect_numerical_drift
 from ml_observability.incidents import build_incident
@@ -17,6 +21,96 @@ app = FastAPI(
 )
 
 
+class RequestBodyLimitMiddleware:
+    """Reject HTTP request bodies larger than the configured byte limit."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int | None = None) -> None:
+        self.app = app
+        configured_limit = (
+            max_bytes
+            if max_bytes is not None
+            else int(os.getenv("ML_OBSERVABILITY_MAX_REQUEST_BYTES", "2000000"))
+        )
+        if configured_limit < 1:
+            raise ValueError("ML_OBSERVABILITY_MAX_REQUEST_BYTES must be positive.")
+        self.max_bytes = configured_limit
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        content_length = next(
+            (value for key, value in scope.get("headers", []) if key.lower() == b"content-length"),
+            None,
+        )
+        if content_length is not None:
+            try:
+                if int(content_length) > self.max_bytes:
+                    await self._send_too_large(send)
+                    return
+            except ValueError:
+                pass  # Let the HTTP server or JSON parser reject malformed headers/bodies.
+
+        messages: list[Message] = []
+        total_bytes = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            total_bytes += len(message.get("body", b""))
+            if total_bytes > self.max_bytes:
+                await self._send_too_large(send)
+                return
+            messages.append(message)
+            if not message.get("more_body", False):
+                break
+
+        replay = iter(messages)
+
+        async def replay_receive() -> Message:
+            try:
+                return next(replay)
+            except StopIteration:
+                return {"type": "http.disconnect"}
+
+        await self.app(scope, replay_receive, send)
+
+    async def _send_too_large(self, send: Send) -> None:
+        body = b'{"detail":"Request body exceeds the configured size limit."}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
+app.add_middleware(RequestBodyLimitMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(
+    _request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Return validation details without echoing untrusted request values."""
+    details = [
+        {key: error[key] for key in ("loc", "msg", "type") if key in error}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": details})
+
+
 class ValidationRequest(BaseModel):
     """Reference and current datasets represented as JSON records."""
 
@@ -25,15 +119,23 @@ class ValidationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_record_columns(self) -> "ValidationRequest":
-        """Require consistent columns within each dataset."""
+        """Require consistent columns and bound per-record dimensions and values."""
         for dataset_name, records in (
             ("reference", self.reference),
             ("current", self.current),
         ):
             expected = set(records[0])
+            if len(expected) > 100:
+                raise ValueError(f"{dataset_name} records may contain at most 100 columns.")
+            if any(len(column) > 128 for column in expected):
+                raise ValueError(f"{dataset_name} column names may contain at most 128 characters.")
             for index, record in enumerate(records):
                 if set(record) != expected:
                     raise ValueError(f"{dataset_name} record {index} has inconsistent columns.")
+                if any(isinstance(value, str) and len(value) > 10_000 for value in record.values()):
+                    raise ValueError(
+                        f"{dataset_name} string values may contain at most 10000 characters."
+                    )
         return self
 
 

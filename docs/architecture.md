@@ -35,6 +35,16 @@ The initial release uses synthetic datasets. It requires no cloud credentials, p
 5. **API layer:** expose validated request and response contracts through FastAPI.
 6. **Evaluation suite:** measure detection quality, false-positive rate, and runtime on controlled scenarios.
 
+The API boundary limits JSON request bodies to 2,000,000 bytes by default. Operators can
+set `ML_OBSERVABILITY_MAX_REQUEST_BYTES` to a positive integer. Each dataset also has
+application-level limits of 10,000 records, 100 columns per record, 128 characters per
+column name, and 10,000 characters per string value. Body-size failures return HTTP 413;
+model validation failures return HTTP 422. A deployment reverse proxy should enforce a
+compatible or stricter body limit because application limits do not replace edge controls.
+The individual record and dimension maxima are independent and may be constrained first
+by the total body-size limit. Configure Uvicorn's `--limit-concurrency` according to the
+capacity of the deployment; concurrency is not limited by the application itself.
+
 Detection logic must remain independent of the API layer so it can be tested and reused directly.
 
 ## 4. Initial technical choices
@@ -57,6 +67,12 @@ The first release will cover:
 - Numerical feature drift using the two-sample Kolmogorov–Smirnov test, with configurable significance thresholds.
 - Explicit handling of insufficient samples and unsupported feature types.
 - Multiple-testing considerations when evaluating multiple features.
+
+The current detector uses the two-sample KS test with Benjamini–Hochberg correction.
+Its synthetic evaluation shows materially lower recall for the tested variance increase
+and variance-normalized heavy-tailed scenarios than for a location shift. These scenarios
+remain supported inputs, but their detection power is limited; operators should validate
+other drift types on representative data before relying on alerts.
 
 Statistical significance alone will not determine incident severity. The system should also consider the magnitude of observed changes and the configured operational policy.
 
@@ -113,4 +129,4 @@ Thresholds and expected results must be documented and justified by the evaluati
 - Invalid inputs fail safely.
 - API behavior is covered by tests.
 - Documentation describes limitations and operational trade-offs.
-- The final changes are reviewed, committed, pushed, and verified on GitHub.
+- The final changes are reviewed and committed locally after the required checks pass.

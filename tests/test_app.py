@@ -69,6 +69,74 @@ def test_validate_endpoint_rejects_inconsistent_record_columns() -> None:
     assert response.status_code == 422
 
 
+def test_validate_endpoint_rejects_more_than_100_columns() -> None:
+    record = {f"column_{index}": index for index in range(101)}
+
+    response = client.post("/validate", json={"reference": [record], "current": [record]})
+
+    assert response.status_code == 422
+    assert "at most 100 columns" in response.text
+
+
+def test_validate_endpoint_accepts_100_columns() -> None:
+    record = {f"column_{index}": index for index in range(100)}
+
+    response = client.post("/validate", json={"reference": [record], "current": [record]})
+
+    assert response.status_code == 200
+
+
+def test_validate_endpoint_rejects_column_names_over_128_characters() -> None:
+    record = {"x" * 129: 1}
+
+    response = client.post("/validate", json={"reference": [record], "current": [record]})
+
+    assert response.status_code == 422
+    assert "at most 128 characters" in response.text
+
+
+def test_validate_endpoint_accepts_string_values_at_the_limit() -> None:
+    record = {"value": "x" * 10_000}
+
+    response = client.post("/validate", json={"reference": [record], "current": [record]})
+
+    assert response.status_code == 200
+
+
+def test_validate_endpoint_rejects_oversized_string_values() -> None:
+    record = {"value": "x" * 10_001}
+
+    response = client.post("/validate", json={"reference": [record], "current": [record]})
+
+    assert response.status_code == 422
+    assert "at most 10000 characters" in response.text
+    assert "x" * 10_001 not in response.text
+
+
+def test_request_body_limit_returns_413() -> None:
+    response = client.post(
+        "/validate",
+        content=b" " * 2_000_001,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request body exceeds the configured size limit."}
+
+
+def test_request_body_limit_accepts_exact_limit() -> None:
+    body = b'{"reference":[{}],"current":[{}]}'
+    body += b" " * (2_000_000 - len(body))
+
+    response = client.post(
+        "/validate",
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 200
+
+
 def test_drift_endpoint_detects_distribution_shift() -> None:
     reference = [{"value": float(index)} for index in range(100)]
     current = [{"value": float(index + 1000)} for index in range(100)]

@@ -35,5 +35,11 @@ jobs:
       - name: Lint
         run: python -m ruff check .
 
+      - name: Verify application import
+        run: python -c "from ml_observability.app import app; assert app.title == 'ML Observability'"
+
+      - name: Smoke test drift evaluation
+        run: python scripts/evaluate_drift_scenarios.py --seed 42 --trials 1 --sample-size 20 --feature-count 2
+
       - name: Run tests
         run: python -m pytest -q
