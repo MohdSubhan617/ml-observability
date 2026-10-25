@@ -7,17 +7,54 @@ import json
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TypedDict
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
 from ml_observability.drift import detect_numerical_drift
+from ml_observability.evaluation import wilson_interval
 
 FloatArray = NDArray[np.float64]
 DistributionSampler = Callable[[np.random.Generator, int], FloatArray]
 DEFAULT_SEEDS = (42, 123, 2026)
-WILSON_Z_95 = 1.959963984540054
+
+
+class ScenarioEvaluationResult(TypedDict):
+    """Confusion-matrix and trial-level metrics for a seeded scenario run."""
+
+    scenario: str
+    seed: int
+    trials: int
+    sample_size: int
+    feature_count: int
+    alpha: float
+    true_positives: int
+    false_positives: int
+    true_negatives: int
+    false_negatives: int
+    precision: float | None
+    recall: float | None
+    f1: float | None
+    false_positive_rate: float | None
+    target_detected_trials: int
+    target_trial_count: int
+    control_trials_with_false_positive: int
+    control_trial_count: int
+
+
+class ScenarioCounts(TypedDict):
+    """Integer confusion-matrix totals used by scenario aggregation."""
+
+    true_positives: int
+    false_positives: int
+    true_negatives: int
+    false_negatives: int
+    target_detected_trials: int
+    target_trial_count: int
+    control_trials_with_false_positive: int
+    control_trial_count: int
 
 
 @dataclass(frozen=True)
@@ -65,34 +102,6 @@ SCENARIOS = (
 )
 
 
-def wilson_interval(
-    successes: int,
-    trials: int,
-    *,
-    z: float = WILSON_Z_95,
-) -> tuple[float, float] | None:
-    """Return a Wilson score confidence interval for a binomial proportion."""
-    if trials < 0:
-        raise ValueError("trials must be >= 0.")
-    if successes < 0 or successes > trials:
-        raise ValueError("successes must be between 0 and trials.")
-    if not math.isfinite(z) or z <= 0:
-        raise ValueError("z must be finite and > 0.")
-    if trials == 0:
-        return None
-
-    proportion = successes / trials
-    z_squared = z * z
-    denominator = 1 + z_squared / trials
-    center = (proportion + z_squared / (2 * trials)) / denominator
-    margin = (
-        z
-        * math.sqrt(proportion * (1 - proportion) / trials + z_squared / (4 * trials * trials))
-        / denominator
-    )
-    return max(0.0, center - margin), min(1.0, center + margin)
-
-
 def evaluate_scenario(
     *,
     scenario: Scenario,
@@ -101,7 +110,7 @@ def evaluate_scenario(
     sample_size: int,
     feature_count: int,
     alpha: float,
-) -> dict[str, str | int | float | None]:
+) -> ScenarioEvaluationResult:
     """Measure detection metrics for one scenario and random seed."""
     if trials < 1:
         raise ValueError("trials must be >= 1.")
@@ -199,7 +208,7 @@ def evaluate_scenario(
 def aggregate_scenario_results(
     *,
     scenario: Scenario,
-    results: Sequence[dict[str, str | int | float | None]],
+    results: Sequence[ScenarioEvaluationResult],
 ) -> dict[str, object]:
     """Aggregate independent seeded runs and compute Wilson confidence intervals."""
     if not results:
@@ -210,17 +219,18 @@ def aggregate_scenario_results(
         if result["scenario"] != expected_name:
             raise ValueError("All results must belong to the requested scenario.")
 
-    count_keys = (
-        "true_positives",
-        "false_positives",
-        "true_negatives",
-        "false_negatives",
-        "target_detected_trials",
-        "target_trial_count",
-        "control_trials_with_false_positive",
-        "control_trial_count",
-    )
-    totals = {key: sum(int(result[key]) for result in results) for key in count_keys}
+    totals: ScenarioCounts = {
+        "true_positives": sum(result["true_positives"] for result in results),
+        "false_positives": sum(result["false_positives"] for result in results),
+        "true_negatives": sum(result["true_negatives"] for result in results),
+        "false_negatives": sum(result["false_negatives"] for result in results),
+        "target_detected_trials": sum(result["target_detected_trials"] for result in results),
+        "target_trial_count": sum(result["target_trial_count"] for result in results),
+        "control_trials_with_false_positive": sum(
+            result["control_trials_with_false_positive"] for result in results
+        ),
+        "control_trial_count": sum(result["control_trial_count"] for result in results),
+    }
 
     tp = totals["true_positives"]
     fp = totals["false_positives"]
@@ -253,12 +263,12 @@ def aggregate_scenario_results(
     first = results[0]
     return {
         "scenario": expected_name,
-        "seeds": [int(result["seed"]) for result in results],
-        "trials_per_seed": int(first["trials"]),
-        "total_trials": sum(int(result["trials"]) for result in results),
-        "sample_size": int(first["sample_size"]),
-        "feature_count": int(first["feature_count"]),
-        "alpha": float(first["alpha"]),
+        "seeds": [result["seed"] for result in results],
+        "trials_per_seed": first["trials"],
+        "total_trials": sum(result["trials"] for result in results),
+        "sample_size": first["sample_size"],
+        "feature_count": first["feature_count"],
+        "alpha": first["alpha"],
         **totals,
         "precision": precision,
         "recall": recall,

@@ -1,5 +1,6 @@
 """Tests for the API application."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ml_observability.app import app
@@ -95,12 +96,33 @@ def test_validate_endpoint_rejects_column_names_over_128_characters() -> None:
     assert "at most 128 characters" in response.text
 
 
+def test_validate_endpoint_accepts_column_names_at_128_characters() -> None:
+    record = {"x" * 128: 1}
+
+    response = client.post("/validate", json={"reference": [record], "current": [record]})
+
+    assert response.status_code == 200
+
+
 def test_validate_endpoint_accepts_string_values_at_the_limit() -> None:
     record = {"value": "x" * 10_000}
 
     response = client.post("/validate", json={"reference": [record], "current": [record]})
 
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(("record_count", "expected_status"), [(10_000, 200), (10_001, 422)])
+def test_validate_endpoint_enforces_record_count_limit(
+    record_count: int, expected_status: int
+) -> None:
+    records = [{"value": 1}] * record_count
+
+    response = client.post("/validate", json={"reference": records, "current": records})
+
+    assert response.status_code == expected_status
+    if expected_status == 422:
+        assert "value" not in response.text
 
 
 def test_validate_endpoint_rejects_oversized_string_values() -> None:
@@ -135,6 +157,18 @@ def test_request_body_limit_accepts_exact_limit() -> None:
     )
 
     assert response.status_code == 200
+
+
+def test_request_body_limit_rejects_streamed_chunked_payload() -> None:
+    chunks = iter((b" " * 1_100_000, b" " * 1_100_000))
+
+    response = client.post(
+        "/validate",
+        content=chunks,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 413
 
 
 def test_drift_endpoint_detects_distribution_shift() -> None:

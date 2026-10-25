@@ -15,6 +15,7 @@ env/
 htmlcov/
 .ruff_cache/
 .mypy_cache/
+.pip-audit-cache/
 
 # Local secrets and configuration
 .env

@@ -26,13 +26,15 @@ class RequestBodyLimitMiddleware:
 
     def __init__(self, app: ASGIApp, max_bytes: int | None = None) -> None:
         self.app = app
-        configured_limit = (
-            max_bytes
-            if max_bytes is not None
-            else int(os.getenv("ML_OBSERVABILITY_MAX_REQUEST_BYTES", "2000000"))
-        )
+        raw_limit = os.getenv("ML_OBSERVABILITY_MAX_REQUEST_BYTES", "2000000")
+        try:
+            configured_limit = max_bytes if max_bytes is not None else int(raw_limit)
+        except ValueError as exc:
+            raise ValueError(
+                "ML_OBSERVABILITY_MAX_REQUEST_BYTES must be a positive integer."
+            ) from exc
         if configured_limit < 1:
-            raise ValueError("ML_OBSERVABILITY_MAX_REQUEST_BYTES must be positive.")
+            raise ValueError("ML_OBSERVABILITY_MAX_REQUEST_BYTES must be a positive integer.")
         self.max_bytes = configured_limit
 
     async def __call__(
@@ -45,17 +47,30 @@ class RequestBodyLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        content_length = next(
-            (value for key, value in scope.get("headers", []) if key.lower() == b"content-length"),
-            None,
+        content_lengths = [
+            value for key, value in scope.get("headers", []) if key.lower() == b"content-length"
+        ]
+        has_transfer_encoding = any(
+            key.lower() == b"transfer-encoding" for key, _ in scope.get("headers", [])
         )
-        if content_length is not None:
-            try:
-                if int(content_length) > self.max_bytes:
-                    await self._send_too_large(send)
-                    return
-            except ValueError:
-                pass  # Let the HTTP server or JSON parser reject malformed headers/bodies.
+        if content_lengths and has_transfer_encoding:
+            await self._send_bad_request(
+                send, "Content-Length and Transfer-Encoding cannot be combined."
+            )
+            return
+        if len(content_lengths) > 1:
+            await self._send_bad_request(send, "Multiple Content-Length headers are not allowed.")
+            return
+        declared_length: int | None = None
+        if content_lengths:
+            raw_content_length = content_lengths[0]
+            if not raw_content_length.isdigit():
+                await self._send_bad_request(send, "Invalid Content-Length header.")
+                return
+            declared_length = int(raw_content_length)
+            if declared_length > self.max_bytes:
+                await self._send_too_large(send)
+                return
 
         messages: list[Message] = []
         total_bytes = 0
@@ -70,6 +85,10 @@ class RequestBodyLimitMiddleware:
             messages.append(message)
             if not message.get("more_body", False):
                 break
+
+        if declared_length is not None and total_bytes != declared_length:
+            await self._send_bad_request(send, "Request body length does not match Content-Length.")
+            return
 
         replay = iter(messages)
 
@@ -87,6 +106,20 @@ class RequestBodyLimitMiddleware:
             {
                 "type": "http.response.start",
                 "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+    async def _send_bad_request(self, send: Send, detail: str) -> None:
+        body = JSONResponse(status_code=400, content={"detail": detail}).body
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 400,
                 "headers": [
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(body)).encode()),

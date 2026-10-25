@@ -8,7 +8,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, cast
+from typing import Literal
 
 Severity = Literal["info", "low", "medium", "high", "critical"]
 IncidentStatus = Literal["open", "acknowledged", "resolved"]
@@ -121,7 +121,7 @@ def build_incident(
         detector=detector,
         category=category,
         scope=scope,
-        severity=cast(Severity, severity),
+        severity=severity,
         status="open",
         observed_metrics=MappingProxyType(observed_metrics.copy()),
         thresholds=MappingProxyType(thresholds.copy()),

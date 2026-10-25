@@ -1,5 +1,6 @@
 """Deterministic dataset validation for ML monitoring."""
 
+from collections.abc import Hashable
 from dataclasses import dataclass
 
 import pandas as pd
@@ -9,9 +10,9 @@ import pandas as pd
 class SchemaValidationResult:
     """Schema and missing-value findings for a current dataset."""
 
-    missing_columns: tuple[str, ...]
-    unexpected_columns: tuple[str, ...]
-    missing_values: dict[str, int]
+    missing_columns: tuple[Hashable, ...]
+    unexpected_columns: tuple[Hashable, ...]
+    missing_values: dict[Hashable, int]
 
     @property
     def is_valid(self) -> bool:

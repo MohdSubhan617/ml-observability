@@ -70,10 +70,13 @@ The request body is limited to 2,000,000 bytes by default. Set
 `ML_OBSERVABILITY_MAX_REQUEST_BYTES` to a positive integer to change this limit.
 Each dataset accepts 1–10,000 records, at most 100 columns per record, column names
 up to 128 characters, and string values up to 10,000 characters. Oversized bodies
-return HTTP 413; invalid dataset dimensions return HTTP 422. Configure a matching
+return HTTP 413; malformed or inconsistent `Content-Length` headers return HTTP 400;
+invalid dataset dimensions return HTTP 422. Configure a matching
 or stricter body limit at the reverse proxy when deploying behind one.
 Record, column, and string limits are independent maxima; the request-body cap may
 be reached first. Set Uvicorn's `--limit-concurrency` for the deployment's capacity.
+Configure a request-body read timeout at the reverse proxy; the application does not
+enforce a per-request processing or body-upload deadline.
 
 ### 4. Run automated tests and quality checks
 
@@ -81,7 +84,14 @@ be reached first. Set Uvicorn's `--limit-concurrency` for the deployment's capac
 python -m pytest -q
 python -m ruff check .
 python -m ruff format --check .
+python -m mypy src scripts
+python -m pip_audit --local --skip-editable --progress-spinner off --timeout 60 --cache-dir .pip-audit-cache
 ```
+
+The type check covers the source package and evaluation scripts. `pip-audit` checks
+installed third-party project and development dependencies against published vulnerability
+advisories and requires access to its advisory data service. Local/editable project code is
+not a published package and is skipped; this is dependency scanning, not source-code analysis.
 
 ## Synthetic evaluation
 
@@ -243,6 +253,61 @@ Selected observed recall ranges across the three seeds:
 Across zero-shift controls, the observed false-positive rate ranged from `0.000` to `0.004` at the individual-seed configuration level. Positive-shift configurations had zero observed false positives in this run.
 
 These measurements are finite-sample observations from synthetic normal distributions with location shifts. They do not establish performance on non-normal distributions, variance changes, real production data, or downstream model degradation. Three seeds provide only a limited view of variability; observed rates are not guarantees.
+
+### Compare drift detectors
+
+Run the bounded comparison across two sample sizes and multiple mean and scale effects:
+
+```powershell
+python scripts/evaluate_drift_methods.py --seeds 42 123 2026 --trials 100 --sample-sizes 50 200
+```
+
+The experiment compares the existing two-sample KS test, which targets general distribution
+changes, with a median-centered Levene (Brown–Forsythe) variance test. Both apply
+Benjamini–Hochberg correction across the feature set. Brown–Forsythe recall is measured only
+for variance-change scenarios; location, heavy-tail, skew, and no-drift scenarios measure its
+false-positive behavior as unchanged-variance controls. The output reports confusion counts,
+feature-level false-positive rate, family-wise false-positive rate, and Wilson intervals.
+The synthetic results describe only the configured distributions and do not establish
+performance on production data.
+
+The KS test assumes independent samples from continuous distributions. Brown–Forsythe tests
+equality of variance between independent samples, using median-centered deviations; it is a
+variance alarm, not a general distribution test. Neither experiment models correlated rows or
+features, and Brown–Forsythe's equal-variance label means location, skew, and normalized
+heavy-tail changes are counted as controls for that method.
+
+#### Recorded comparison
+
+Command: `python scripts/evaluate_drift_methods.py --seeds 42 123 2026 --trials 100 --sample-sizes 50 200`
+Each row aggregates 300 trials per scenario and sample size, with five independent features,
+one designated target feature, four controls, and `alpha=0.05`.
+
+| Scenario | n | KS recall | KS feature FPR | Brown–Forsythe recall | Brown–Forsythe feature FPR |
+|---|---:|---:|---:|---:|---:|
+| No drift | 50 | N/A | 0.40% | N/A | 0.87% |
+| No drift | 200 | N/A | 0.53% | N/A | 0.87% |
+| Location shift 0.5 | 50 | 25.0% | 0.67% | N/A | 0.87% |
+| Location shift 0.5 | 200 | 99.3% | 1.50% | N/A | 0.87% |
+| Location shift 0.8 | 50 | 73.0% | 0.75% | N/A | 0.87% |
+| Location shift 0.8 | 200 | 100.0% | 1.50% | N/A | 0.87% |
+| Variance scale 1.5 | 50 | 1.7% | 0.42% | 48.3% | 1.83% |
+| Variance scale 1.5 | 200 | 18.7% | 0.83% | 100.0% | 1.92% |
+| Variance scale 2.0 | 50 | 9.7% | 0.50% | 96.0% | 2.17% |
+| Variance scale 2.0 | 200 | 94.7% | 1.50% | 100.0% | 1.92% |
+| Heavy-tailed, equal theoretical variance | 50 | 1.7% | 0.58% | N/A | 3.60% |
+| Heavy-tailed, equal theoretical variance | 200 | 23.0% | 0.75% | N/A | 11.40% |
+| Skewed, equal theoretical variance | 50 | 9.7% | 0.33% | N/A | 1.60% |
+| Skewed, equal theoretical variance | 200 | 78.0% | 0.92% | N/A | 4.13% |
+
+Brown–Forsythe improves recall for the tested variance increases, especially at 200 samples,
+but its false-positive rate rises sharply for the equal-variance heavy-tailed and skewed
+controls. The heaviest-tail control had 52.0% family-wise false positives at 200 samples
+(156 of 300 trials). This confirms that adding a variance-only test as a general drift alarm
+would produce many shape-change alerts. It remains evaluation-only. The JSON output also
+includes confusion counts and Wilson intervals for recall and family-wise false-positive rate.
+“Variance scale” is the standard-deviation multiplier, so scales 1.5 and 2.0 correspond
+to variance multipliers 2.25 and 4.0, respectively.
 
 ## Statistical and operational limitations
 

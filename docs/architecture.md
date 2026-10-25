@@ -39,11 +39,14 @@ The API boundary limits JSON request bodies to 2,000,000 bytes by default. Opera
 set `ML_OBSERVABILITY_MAX_REQUEST_BYTES` to a positive integer. Each dataset also has
 application-level limits of 10,000 records, 100 columns per record, 128 characters per
 column name, and 10,000 characters per string value. Body-size failures return HTTP 413;
-model validation failures return HTTP 422. A deployment reverse proxy should enforce a
+malformed or inconsistent `Content-Length` headers return HTTP 400; model validation
+failures return HTTP 422. A deployment reverse proxy should enforce a
 compatible or stricter body limit because application limits do not replace edge controls.
 The individual record and dimension maxima are independent and may be constrained first
 by the total body-size limit. Configure Uvicorn's `--limit-concurrency` according to the
-capacity of the deployment; concurrency is not limited by the application itself.
+capacity of the deployment; concurrency is not limited by the application itself. A
+reverse proxy should also enforce a request-body read timeout because the application does
+not set an upload or per-request processing deadline.
 
 Detection logic must remain independent of the API layer so it can be tested and reused directly.
 
@@ -73,6 +76,12 @@ Its synthetic evaluation shows materially lower recall for the tested variance i
 and variance-normalized heavy-tailed scenarios than for a location shift. These scenarios
 remain supported inputs, but their detection power is limited; operators should validate
 other drift types on representative data before relying on alerts.
+
+The evaluation-only comparison script also measures a median-centered Levene
+(Brown–Forsythe) test. That method tests equality of variance between independent samples;
+it is not part of the API detector and is not a general distribution-change detector. The
+KS test assumes independent samples from continuous distributions. Neither method has been
+validated here for correlated rows or features.
 
 Statistical significance alone will not determine incident severity. The system should also consider the magnitude of observed changes and the configured operational policy.
 
