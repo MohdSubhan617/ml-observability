@@ -28,7 +28,7 @@ class SchemaEvidence(ContractModel):
     is_valid: bool | None = None
     missing_columns: ColumnNames = Field(default_factory=list)
     unexpected_columns: ColumnNames = Field(default_factory=list)
-    missing_values: dict[FeatureName, Annotated[int, Field(ge=1)]] = Field(
+    missing_values: dict[FeatureName, Annotated[int, Field(ge=1, le=10_000)]] = Field(
         default_factory=dict, max_length=100
     )
 
@@ -53,8 +53,8 @@ class DriftEvidence(ContractModel):
     drift_detected: bool | None
     adjusted_p_value: Annotated[float, Field(ge=0, le=1)] | None
     alpha: Annotated[float, Field(gt=0, lt=1)]
-    reference_count: Annotated[int, Field(ge=0)] | None = None
-    current_count: Annotated[int, Field(ge=0)] | None = None
+    reference_count: Annotated[int, Field(ge=0, le=10_000)] | None = None
+    current_count: Annotated[int, Field(ge=0, le=10_000)] | None = None
     statistic: Annotated[float, Field(ge=0, le=1)] | None = None
     p_value: Annotated[float, Field(ge=0, le=1)] | None = None
     reason: Annotated[str, Field(max_length=256)] | None = None
@@ -105,6 +105,7 @@ class Hypothesis(ContractModel):
     score: Annotated[int, Field(ge=0, le=10)]
     score_type: Literal["heuristic_points"] = "heuristic_points"
     evidence_strength: Literal["limited", "moderate", "strong"]
+    conflicted: bool
     supporting_evidence: Annotated[list[EvidenceReference], Field(max_length=200)]
     contradictory_evidence: Annotated[list[EvidenceReference], Field(max_length=200)]
 
@@ -129,6 +130,15 @@ _CATEGORY_ORDER = {
 
 def _observation(item: Evidence, text: str) -> EvidenceReference:
     return EvidenceReference(evidence_id=item.evidence_id, observation=text[:256])
+
+
+def _name_summary(names: tuple[str, ...]) -> str:
+    """Summarize bounded schema names without cutting a quoted name mid-string."""
+    examples = [repr(name[:32]) for name in names[:3]]
+    suffix = ", ".join(examples)
+    if len(names) > len(examples):
+        suffix += ", …"
+    return f"{len(names)}: {suffix}"
 
 
 def _strength(
@@ -164,6 +174,7 @@ def _hypothesis(
             len(contradictory),
             len({item.evidence_id for item in supporting}),
         ),
+        conflicted=bool(contradictory),
         supporting_evidence=sorted(supporting, key=lambda item: item.evidence_id),
         contradictory_evidence=sorted(contradictory, key=lambda item: item.evidence_id),
     )
@@ -222,8 +233,10 @@ def investigate(request: InvestigationRequest) -> InvestigationResult:
                 + "; ".join(
                     part
                     for part in (
-                        f"missing columns {item.missing_columns!r}" if item.missing_columns else "",
-                        f"unexpected columns {item.unexpected_columns!r}"
+                        f"missing columns {_name_summary(tuple(item.missing_columns))}"
+                        if item.missing_columns
+                        else "",
+                        f"unexpected columns {_name_summary(tuple(item.unexpected_columns))}"
                         if item.unexpected_columns
                         else "",
                     )
@@ -259,10 +272,12 @@ def investigate(request: InvestigationRequest) -> InvestigationResult:
                 [
                     _observation(
                         item,
-                        "Null counts: "
+                        "Null values in "
+                        f"{len(item.missing_values)} column(s), "
+                        f"{sum(item.missing_values.values())} total; examples: "
                         + ", ".join(
-                            f"{column!r}={count}"
-                            for column, count in sorted(item.missing_values.items())
+                            f"{column[:32]!r}={count}"
+                            for column, count in sorted(item.missing_values.items())[:3]
                         ),
                     )
                     for item in missing_support
@@ -283,15 +298,24 @@ def investigate(request: InvestigationRequest) -> InvestigationResult:
     payload = json.dumps(canonical_evidence, sort_keys=True, separators=(",", ":"))
     analysis_id = f"analysis_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24]}"
 
-    has_conflict = any(item.contradictory_evidence for item in hypotheses)
     if not hypotheses:
         abstention_reason = "No supported schema or evaluated feature-drift findings were supplied."
-    elif has_conflict:
-        abstention_reason = (
-            "Supplied observations conflict; review the supporting and contradictory evidence."
-        )
     else:
-        abstention_reason = None
+        top_score = hypotheses[0].score
+        top_hypotheses = [item for item in hypotheses if item.score == top_score]
+        conflicted_top = [item for item in top_hypotheses if item.conflicted]
+        if not conflicted_top:
+            abstention_reason = None
+        elif len(top_hypotheses) > 1:
+            abstention_reason = (
+                "Top-ranked hypotheses are tied and include conflicting evidence; "
+                "review before selecting a lead."
+            )
+        else:
+            abstention_reason = (
+                "The top-ranked hypothesis has contradictory evidence; review before "
+                "selecting a lead."
+            )
 
     return InvestigationResult(
         analysis_id=analysis_id,

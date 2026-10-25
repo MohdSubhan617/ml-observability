@@ -44,6 +44,9 @@ def test_feature_drift_hypothesis_cites_actual_drift_result() -> None:
 
     assert result.hypotheses[0].category == "feature_distribution_shift"
     assert result.hypotheses[0].supporting_evidence[0].evidence_id == "d1"
+    assert result.hypotheses[0].supporting_evidence[0].observation == (
+        "Feature 'income': adjusted p-value 0.001 is below alpha 0.05."
+    )
     assert result.hypotheses[0].score == 4
     assert result.hypotheses[0].score_type == "heuristic_points"
     assert not result.abstained
@@ -64,10 +67,15 @@ def test_schema_and_missingness_categories_are_supported(
 
     assert [item.category for item in result.hypotheses] == [category]
     assert result.hypotheses[0].supporting_evidence[0].evidence_id == finding.evidence_id
+    observation = result.hypotheses[0].supporting_evidence[0].observation
+    if category == "schema_contract_violation":
+        assert "age" in observation or "region" in observation
+    else:
+        assert "age" in observation and "2" in observation
 
 
 def test_multiple_causes_are_returned_and_ranked_deterministically() -> None:
-    evidence = [
+    evidence: list[SchemaEvidence | DriftEvidence] = [
         drift("d1", feature="a"),
         drift("d2", feature="b"),
         schema("s1", missing_values={"c": 3}),
@@ -95,7 +103,7 @@ def test_one_large_signal_cannot_receive_strong_evidence_label() -> None:
 
 
 def test_strong_evidence_label_requires_multiple_evidence_records() -> None:
-    evidence = [
+    evidence: list[SchemaEvidence | DriftEvidence] = [
         schema(
             f"record-{index}",
             missing_columns=[f"column_{index * 4 + offset}" for offset in range(4)],
@@ -132,6 +140,31 @@ def test_same_feature_conflicting_results_are_cited_and_abstain() -> None:
     assert hypothesis.score == 1
     assert [item.evidence_id for item in hypothesis.contradictory_evidence] == ["negative"]
     assert hypothesis.evidence_strength == "limited"
+    assert hypothesis.conflicted
+
+
+def test_lower_ranked_conflict_does_not_suppress_independent_supported_finding() -> None:
+    result = investigate(
+        InvestigationRequest(
+            evidence=[
+                drift("positive"),
+                drift("negative", detected=False),
+                schema("schema", missing_columns=["campaign"]),
+            ]
+        )
+    )
+
+    assert not result.abstained
+    assert [item.category for item in result.hypotheses] == [
+        "schema_contract_violation",
+        "feature_distribution_shift",
+    ]
+    assert (
+        "missing columns 1: 'campaign'" in result.hypotheses[0].supporting_evidence[0].observation
+    )
+    conflicted = result.hypotheses[1]
+    assert conflicted.conflicted
+    assert [item.evidence_id for item in conflicted.contradictory_evidence] == ["negative"]
 
 
 def test_clean_observations_and_unevaluated_drift_produce_no_diagnosis() -> None:
@@ -152,7 +185,10 @@ def test_clean_observations_and_unevaluated_drift_produce_no_diagnosis() -> None
 
 
 def test_analysis_id_is_stable_for_same_evidence_in_any_input_order() -> None:
-    evidence = [drift("d1"), schema("s1", missing_columns=["x"])]
+    evidence: list[SchemaEvidence | DriftEvidence] = [
+        drift("d1"),
+        schema("s1", missing_columns=["x"]),
+    ]
 
     first = investigate(InvestigationRequest(evidence=evidence))
     second = investigate(InvestigationRequest(evidence=evidence[::-1]))
@@ -206,6 +242,22 @@ def test_feature_and_evidence_id_length_boundaries() -> None:
         drift("e" * 65)
     with pytest.raises(ValidationError):
         drift("ok", feature="f" * 129)
+
+
+def test_reported_counts_cannot_exceed_dataset_record_limit() -> None:
+    with pytest.raises(ValidationError):
+        schema("too-many-nulls", missing_values={"age": 10_001})
+    with pytest.raises(ValidationError):
+        DriftEvidence(
+            kind="feature_drift",
+            evidence_id="too-many-rows",
+            feature="age",
+            status="evaluated",
+            drift_detected=True,
+            adjusted_p_value=0.001,
+            alpha=0.05,
+            reference_count=10_001,
+        )
 
 
 def test_column_name_collection_accepts_100_and_rejects_101() -> None:

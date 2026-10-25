@@ -46,11 +46,13 @@ fetch historical incidents.
 
 Scores are capped heuristic points rather than probabilities. One finding starts at four
 points and each additional distinct affected scope adds one point; contradictory references
-subtract three points. Equal scores use a stable category order. Multiple independently
+subtract three points. Equal scores use a stable category order. Conflicting evidence marks
+the affected hypothesis as conflicted and remains attached to it. Multiple independently
 supported findings are retained together. The result abstains when there are no supported
-findings or when observations conflict, and it lists unavailable signals that could help a
-later investigation. An analysis identifier is a deterministic content hash; it is not a
-database or incident key.
+findings or when a top-ranked hypothesis is conflicted (including a conflicted top-score tie).
+A lower-ranked conflict does not suppress a stronger independent finding. The result also
+lists unavailable signals that could help a later investigation. An analysis identifier is a
+deterministic content hash; it is not a database or incident key.
 
 Strength is `limited` for conflicts or scores below four, `moderate` for scores four through
 seven and for higher scores from a single evidence record, and `strong` only for scores of at

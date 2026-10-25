@@ -88,8 +88,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/investigate `
 ```
 
 The result contains a deterministic `analysis_id`, diagnostic contract version, ranked
-hypotheses, evidence references, supporting and contradictory observations, heuristic score,
-evidence-strength label, and missing signal recommendations. The current supported
+hypotheses, evidence references, supporting and contradictory observations, a `conflicted`
+flag, heuristic score, evidence-strength label, and missing signal recommendations. The current supported
 hypotheses are:
 
 | Hypothesis | Required supplied observation |
@@ -99,7 +99,10 @@ hypotheses are:
 | `missingness` | One or more positive null counts from `/validate` |
 
 No hypothesis is emitted for an unevaluated drift result, a clean schema result, or missing
-evidence. Contradictory decisions for the same feature are both cited and cause abstention.
+evidence. Contradictory decisions for the same feature are both cited and mark that
+hypothesis as conflicted. The investigator abstains when a top-ranked hypothesis is
+conflicted, including a conflicted candidate tied for the top score. A conflict confined to
+a lower-ranked hypothesis remains visible without suppressing a stronger independent finding.
 When multiple causes are independently supported, all are returned; equal scores use the
 fixed order `feature_distribution_shift`, `schema_contract_violation`, `missingness`.
 An `analysis_id` is a stable hash of the normalized supplied evidence, not a persisted
@@ -121,7 +124,8 @@ for a score of eight or more with fewer than two distinct evidence records, and 
 a score of eight or more supported by at least two distinct evidence records. The labels have
 not been statistically calibrated. Ties are resolved
 deterministically and do not hide independently supported hypotheses. The investigator
-abstains when no supported finding exists or supplied evidence conflicts.
+abstains when no supported finding exists or when a conflicted hypothesis is tied for or
+above the top rank.
 
 ### Investigator evaluation
 
