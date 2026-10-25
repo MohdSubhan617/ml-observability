@@ -138,18 +138,17 @@ Run linting:
 ```powershell
 python -m ruff check .
 ```
-
 ## Synthetic evaluation
 
-Run the deterministic drift evaluation:
+### Baseline drift evaluation
+
+Run the baseline evaluation:
 
 ```powershell
 python scripts/evaluate_drift.py
 ```
 
-The current seeded configuration uses 100 trials, 200 samples per dataset, five numerical features, and a location shift of 0.8 for the target feature.
-
-Observed result from this configuration:
+This seeded benchmark uses 100 trials, 200 samples per dataset, five numerical features, and a location shift of 0.8 for the target feature.
 
 | Metric | Result |
 |---|---:|
@@ -158,7 +157,40 @@ Observed result from this configuration:
 | Trials | 100 |
 | Unchanged-feature tests | 900 |
 
-These are results from one synthetic Gaussian scenario, not a guarantee of production performance. Broader evaluation should cover multiple distributions, sample sizes, shift magnitudes, missingness patterns, and repeated random seeds.
+### Labeled scenario evaluation
+
+Run the evaluation against known synthetic labels:
+
+```powershell
+python scripts/evaluate_scenarios.py
+```
+
+Default configuration: seed `42`, 100 trials, 200 samples per dataset, five numerical features, location shift `0.8`, and significance level `0.05`.
+
+Results from the current run:
+
+| Metric | Result |
+|---|---:|
+| Evaluated feature cases | 500 |
+| True positives | 100 |
+| False positives | 0 |
+| True negatives | 400 |
+| False negatives | 0 |
+| Precision | 1.00 |
+| Recall | 1.00 |
+| F1 score | 1.00 |
+| False-positive rate | 0.00 |
+
+The configuration is adjustable:
+
+```powershell
+python scripts/evaluate_scenarios.py --seed 7 --trials 100 --sample-size 200 --feature-count 5 --shift 0.8 --alpha 0.05
+```
+
+The scenario evaluator treats `feature_0` as shifted and the remaining features as unchanged. Precision, recall, F1, and false-positive rate are calculated against these known synthetic labels.
+
+**Interpretation:** These results apply only to the tested synthetic configuration and seed. They do not establish generalization to real-world datasets or production performance. Broader evaluation should cover different distributions, sample sizes, shift magnitudes, repeated seeds, missingness patterns, and runtime scaling.
+
 
 ## Statistical and operational limitations
 
