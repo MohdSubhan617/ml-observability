@@ -1,206 +1,189 @@
 # ML Observability
 
-A production-oriented ML monitoring service for dataset validation, numerical feature drift detection, and evidence-based incident triage.
+A production-oriented ML monitoring service for detecting data-quality failures and numerical feature drift, generating evidence-backed incidents, and recommending investigation steps.
+
+The project emphasizes reproducible evaluation, explicit failure handling, typed API contracts, automated tests, and operational limitations. All evaluation data is synthetic; no proprietary data or cloud credentials are required.
 
 ## Features
 
-- **Schema validation:** Detect missing and unexpected columns.
-- **Data-quality checks:** Count null values by column.
-- **Numerical drift detection:** Compare reference and current distributions using the two-sample Kolmogorov–Smirnov (KS) test.
-- **Multiple-testing correction:** Apply Benjamini–Hochberg false discovery rate (FDR) correction across evaluated features.
-- **Explicit evaluation status:** Mark features as not evaluated when sample counts are insufficient or non-finite values are present.
-- **REST API:** Expose monitoring operations through FastAPI.
-- **Automated quality checks:** Run formatting, linting, and tests through GitHub Actions.
-- **Reproducible evaluation:** Measure drift detection and false-positive rates on seeded synthetic data.
+- **Data validation:** detect missing values, unexpected columns, and invalid inputs.
+- **Numerical drift detection:** compare reference and current feature distributions using the two-sample Kolmogorov–Smirnov test.
+- **Incident generation:** produce structured incidents with severity, supporting evidence, and recommended investigation steps.
+- **REST API:** expose monitoring functionality through FastAPI.
+- **Reproducible evaluation:** measure detection quality on controlled, labeled scenarios and across multiple drift magnitudes, sample sizes, and random seeds.
+- **Automated quality checks:** validate behavior with pytest and enforce code quality with Ruff.
 
 ## Architecture
 
-```text
-Reference and current datasets
-            |
-            v
-      FastAPI service
-        /       \
-       v         v
- Schema checks   KS drift tests
-       |         |
-       v         v
- Data-quality    BH-adjusted
- findings        drift results
-        \       /
-         v     v
-       JSON responses
-```
+The monitoring pipeline separates responsibilities into distinct components:
 
-## Requirements
+1. Input validation checks dataset structure and supported inputs.
+2. The drift detector evaluates feature distributions.
+3. The evidence builder captures the results needed to explain detections.
+4. The triage layer generates structured incidents and investigation recommendations.
+5. The FastAPI layer exposes the service through validated request and response contracts.
+6. The evaluation suite measures detection behavior against synthetic ground truth.
+
+Detection logic remains independent of the API layer so it can be tested and reused directly.
+
+See [`docs/architecture.md`](docs/architecture.md) for the architecture and design constraints.
+
+## Technology stack
 
 - Python 3.13
-- pip
-- Git
+- FastAPI and Pydantic
+- pandas, NumPy, and SciPy
+- pytest
+- Ruff
+- GitHub Actions
 
-## Setup
+## Getting started
 
-Clone the repository and enter its directory:
+### 1. Create and activate a virtual environment
+
+PowerShell:
 
 ```powershell
-git clone https://github.com/MohdSubhan617/ml-observability.git
-cd ml-observability
+python -m venv .venv
+& ".\.venv\Scripts\Activate.ps1"
 ```
 
-Create and activate a virtual environment on Windows PowerShell:
+### 2. Install dependencies
+
+Install the project and its development dependencies using the repository's configured package metadata:
 
 ```powershell
-py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-Install the project and development dependencies:
-
-```powershell
+python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-## Run the API
+### 3. Run the API
 
 ```powershell
-python -m uvicorn ml_observability.app:app --reload
+uvicorn ml_observability.api:app --reload
 ```
 
-Health check:
+Use the application's `/docs` endpoint to inspect the available API operations and request schemas.
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-Interactive API documentation:
-
-http://127.0.0.1:8000/docs
-
-## API examples
-
-### Validate a dataset
-
-```powershell
-$body = @{
-    reference = @(
-        @{ age = 25; score = 0.4 }
-        @{ age = 30; score = 0.8 }
-    )
-    current = @(
-        @{ age = 26; score = 0.5 }
-        @{ age = 31; score = 0.7 }
-    )
-} | ConvertTo-Json -Depth 5
-
-Invoke-RestMethod `
-    -Uri http://127.0.0.1:8000/validate `
-    -Method Post `
-    -ContentType "application/json" `
-    -Body $body
-```
-
-### Detect numerical drift
-
-```powershell
-$reference = @(1..100 | ForEach-Object { @{ value = [double]$_ } })
-$current = @(1..100 | ForEach-Object { @{ value = [double]($_ + 1000) } })
-
-$body = @{
-    reference = $reference
-    current = $current
-    min_samples = 20
-    alpha = 0.05
-} | ConvertTo-Json -Depth 5
-
-Invoke-RestMethod `
-    -Uri http://127.0.0.1:8000/drift `
-    -Method Post `
-    -ContentType "application/json" `
-    -Body $body
-```
-
-## Tests and code quality
-
-Run the test suite:
+### 4. Run automated tests and quality checks
 
 ```powershell
 python -m pytest -q
-```
-
-Check formatting:
-
-```powershell
+python -m ruff check .
 python -m ruff format --check .
 ```
 
-Run linting:
-
-```powershell
-python -m ruff check .
-```
 ## Synthetic evaluation
+
+The evaluation suite measures drift detection under controlled conditions. Results are specific to the stated data-generating process, sample sizes, significance threshold, and random seeds.
 
 ### Baseline drift evaluation
 
-Run the baseline evaluation:
+Run:
 
 ```powershell
 python scripts/evaluate_drift.py
 ```
 
-This seeded benchmark uses 100 trials, 200 samples per dataset, five numerical features, and a location shift of 0.8 for the target feature.
+The baseline experiment uses 100 trials, 200 samples per dataset, five numerical features, a location shift of `0.8`, random seed `42`, and significance level `0.05`.
+
+Observed baseline results:
 
 | Metric | Result |
 |---|---:|
-| Shifted-feature detection rate | 100% |
-| Unchanged-feature false-positive rate | 1% |
-| Trials | 100 |
-| Unchanged-feature tests | 900 |
+| Shifted-feature detection rate | 1.00 |
+| Unchanged-feature false-positive rate | 0.01 |
+| False positives | 9 of 900 unchanged-feature tests |
+
+These are results from one synthetic configuration, not production performance guarantees.
 
 ### Labeled scenario evaluation
 
-Run the evaluation against known synthetic labels:
+Run:
 
 ```powershell
 python scripts/evaluate_scenarios.py
 ```
 
-Default configuration: seed `42`, 100 trials, 200 samples per dataset, five numerical features, location shift `0.8`, and significance level `0.05`.
+This evaluation compares detector output against known synthetic labels and reports the confusion matrix and classification metrics.
 
-Results from the current run:
+The recorded experiment used 100 trials, 200 samples, five numerical features, a location shift of `0.8`, and significance level `0.05`.
 
-| Metric | Result |
+| Metric | Observed result |
 |---|---:|
-| Evaluated feature cases | 500 |
 | True positives | 100 |
 | False positives | 0 |
 | True negatives | 400 |
 | False negatives | 0 |
 | Precision | 1.00 |
 | Recall | 1.00 |
-| F1 score | 1.00 |
+| F1 | 1.00 |
 | False-positive rate | 0.00 |
 
-The configuration is adjustable:
+These perfect scores apply only to this particular synthetic experiment. They do not establish generalization to real-world data.
+
+### Drift evaluation matrix
+
+Run the full matrix:
 
 ```powershell
-python scripts/evaluate_scenarios.py --seed 7 --trials 100 --sample-size 200 --feature-count 5 --shift 0.8 --alpha 0.05
+python scripts/evaluate_drift_matrix.py
 ```
 
-The scenario evaluator treats `feature_0` as shifted and the remaining features as unchanged. Precision, recall, F1, and false-positive rate are calculated against these known synthetic labels.
+The evaluator measures detection performance across five location-shift magnitudes, four sample sizes, and three random seeds.
 
-**Interpretation:** These results apply only to the tested synthetic configuration and seed. They do not establish generalization to real-world datasets or production performance. Broader evaluation should cover different distributions, sample sizes, shift magnitudes, repeated seeds, missingness patterns, and runtime scaling.
+| Parameter | Values |
+|---|---|
+| Location shift | `0.0`, `0.2`, `0.5`, `0.8`, `1.2` |
+| Samples per dataset | `50`, `100`, `200`, `500` |
+| Random seeds | `42`, `123`, `2026` |
+| Trials per configuration | `100` |
+| Numerical features | `5` |
+| Significance level | `0.05` |
+| Configurations | `60` |
+| Total trials | `6,000` |
 
+The zero-shift configuration is the negative control. For positive shifts, `feature_0` is the target feature and the other features are unchanged. Metrics are calculated against these synthetic labels.
+
+**Observed findings from the current run:**
+
+- **Detection sensitivity increases with sample size and shift magnitude.** For shift `0.5`, recall ranged from `0.16–0.26` at 50 samples, `0.56–0.63` at 100 samples, `0.92–0.98` at 200 samples, and `1.00` at 500 samples across the three seeds.
+- **Small shifts are harder to detect.** For shift `0.2`, recall ranged from `0.01–0.03` at 50 samples to `0.49–0.60` at 500 samples.
+- **Larger shifts were consistently detected in this run.** For shift `0.8`, recall was `0.70–0.73` at 50 samples and at least `0.99` at 100 samples.
+- **Observed false-positive rates were low in these trials.** Across zero-shift controls, the false-positive rate ranged from `0.000–0.004` at the individual-seed configuration level. Positive-shift configurations had zero observed false positives in this run.
+
+Precision is `null` when there are no positive predictions. In a zero-shift control, precision is `0.0` if false positives occur and `null` otherwise. Recall and F1 are `null` for the zero-shift control because there are no positive ground-truth examples. False-positive rate remains meaningful for this control.
+
+**Limitations:** These results describe seeded synthetic normal distributions with a location shift. They do not establish performance on non-normal distributions, changes in variance, real production data, or downstream model degradation. The three seeds provide a limited view of variability; observed rates are not guarantees.
 
 ## Statistical and operational limitations
 
-- The KS test detects differences between empirical distributions; it does not establish that a shift harms model performance.
-- The detector currently evaluates shared numerical features only.
-- Benjamini–Hochberg correction controls the false discovery rate under its applicable assumptions; it does not eliminate false positives.
-- Schema and null checks do not yet cover every data-quality failure mode.
-- Synthetic evaluation does not substitute for validation against representative production data.
-- Incident triage recommendations and production integrations remain future extensions.
+- A statistically significant distribution change does not necessarily imply degraded model performance.
+- Detection power depends on effect size, sample size, distribution assumptions, and significance thresholds.
+- Evaluating multiple features introduces multiple-testing considerations.
+- Synthetic evaluation cannot substitute for validation against representative production data.
+- Incident recommendations identify investigation steps; they do not establish root cause.
+- The service does not automatically retrain, modify, or deploy models.
 
-## Development status
+Before production use, calibrate thresholds against representative data, measure latency and resource use, establish alerting policies, and validate operational failure handling.
 
-This repository is an evolving portfolio project focused on reproducibility, testability, and production-oriented ML monitoring design.
+## Development principles
+
+- Keep detector logic independent of transport and API concerns.
+- Make evaluation runs reproducible through explicit seeds and documented parameters.
+- Test negative controls, failure paths, and invalid inputs.
+- Avoid logging raw records or unnecessary sensitive values.
+- Treat benchmarks as measured evidence, not universal guarantees.
+- Prefer explicit contracts and reviewable changes over implicit behavior.
+
+## Roadmap
+
+- Expand evaluation to variance shifts and non-normal distributions.
+- Quantify runtime and memory behavior as sample size and feature count increase.
+- Evaluate multiple-testing corrections.
+- Improve operational observability and incident lifecycle handling.
+- Validate detection thresholds against representative datasets.
+
+## License
+
+No license has been specified yet. Check the repository for an applicable license before reusing or redistributing the project.
