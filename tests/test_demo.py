@@ -56,3 +56,27 @@ def test_demo_cli_can_save_machine_readable_output(
     result = json.loads(output_path.read_text(encoding="utf-8"))
     assert result["seed"] == 42
     assert "# Synthetic ML observability demo" in capsys.readouterr().out
+
+
+def test_demo_cli_reports_json_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_path = tmp_path / "missing-directory" / "demo-report.json"
+    monkeypatch.setattr("sys.argv", ["run_demo.py", "--json-output", str(output_path)])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+    error = capsys.readouterr().err
+    assert "could not write JSON output" in error
+    assert "missing-directory" in error
+
+
+def test_demo_rejects_missing_expected_findings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scripts.run_demo.detect_numerical_drift", lambda *args, **kwargs: [])
+
+    with pytest.raises(RuntimeError, match="injected schema, missingness, and location-shift"):
+        run_demo(seed=42)

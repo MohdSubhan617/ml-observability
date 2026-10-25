@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -242,9 +243,16 @@ def main() -> None:
 
     result = run_demo(seed=args.seed)
     if args.json_output is not None:
-        args.json_output.write_text(
-            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        try:
+            args.json_output.write_text(
+                json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            print(
+                f"error: could not write JSON output to {args.json_output}: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
     print(render_report(result), end="")
 
 
