@@ -1,41 +1,40 @@
 # ML Observability
 
-A production-oriented ML monitoring service for detecting data-quality failures and numerical feature drift, generating evidence-backed incidents, and recommending investigation steps.
+A production-oriented ML observability service for detecting numerical data drift, evaluating detector behavior, and supporting evidence-based incident triage.
 
-The project emphasizes reproducible evaluation, explicit failure handling, typed API contracts, automated tests, and operational limitations. All evaluation data is synthetic; no proprietary data or cloud credentials are required.
+The project emphasizes reproducible evaluation, explicit limitations, automated testing, and a clean separation between drift detection and API delivery.
 
 ## Features
 
-- **Data validation:** detect missing values, unexpected columns, and invalid inputs.
-- **Numerical drift detection:** compare reference and current feature distributions using the two-sample Kolmogorov–Smirnov test.
-- **Incident generation:** produce structured incidents with severity, supporting evidence, and recommended investigation steps.
-- **REST API:** expose monitoring functionality through FastAPI.
-- **Reproducible evaluation:** measure detection quality on controlled, labeled scenarios and across multiple drift magnitudes, sample sizes, and random seeds.
-- **Automated quality checks:** validate behavior with pytest and enforce code quality with Ruff.
+- Numerical drift detection using the two-sample Kolmogorov–Smirnov (KS) test.
+- Benjamini–Hochberg false-discovery-rate correction across evaluated numerical features.
+- Input validation and explicit handling of insufficient samples.
+- FastAPI endpoints for drift analysis and health checks.
+- Synthetic evaluations with known labels and multiple distribution-change scenarios.
+- Multi-seed evaluation with 95% Wilson confidence intervals for selected metrics.
+- Automated tests, linting, and formatting checks.
 
 ## Architecture
 
-The monitoring pipeline separates responsibilities into distinct components:
+The service separates the detector from its API layer:
 
-1. Input validation checks dataset structure and supported inputs.
-2. The drift detector evaluates feature distributions.
-3. The evidence builder captures the results needed to explain detections.
-4. The triage layer generates structured incidents and investigation recommendations.
-5. The FastAPI layer exposes the service through validated request and response contracts.
-6. The evaluation suite measures detection behavior against synthetic ground truth.
+1. **Drift detection:** compares reference and current numerical feature distributions.
+2. **Statistical correction:** adjusts feature-level significance decisions for multiple testing.
+3. **API layer:** exposes detection results through typed HTTP endpoints.
+4. **Evaluation layer:** measures detector behavior against synthetic scenarios with known ground truth.
+5. **Tests and quality checks:** validate expected behavior, input handling, reproducibility, and regression safety.
 
-Detection logic remains independent of the API layer so it can be tested and reused directly.
-
-See [`docs/architecture.md`](docs/architecture.md) for the architecture and design constraints.
+The detector does not automatically retrain, modify, or deploy models. Drift alerts are signals for further investigation, not proof of model degradation or root cause.
 
 ## Technology stack
 
 - Python 3.13
-- FastAPI and Pydantic
-- pandas, NumPy, and SciPy
+- FastAPI and Uvicorn
+- NumPy and pandas
+- SciPy
+- Pydantic
 - pytest
 - Ruff
-- GitHub Actions
 
 ## Getting started
 
@@ -44,13 +43,13 @@ See [`docs/architecture.md`](docs/architecture.md) for the architecture and desi
 PowerShell:
 
 ```powershell
-python -m venv .venv
-& ".\.venv\Scripts\Activate.ps1"
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
 ### 2. Install dependencies
 
-Install the project and its development dependencies using the repository's configured package metadata:
+Install the project and development dependencies:
 
 ```powershell
 python -m pip install --upgrade pip
@@ -63,7 +62,9 @@ python -m pip install -e ".[dev]"
 uvicorn ml_observability.api:app --reload
 ```
 
-Use the application's `/docs` endpoint to inspect the available API operations and request schemas.
+The interactive API documentation is available at:
+
+- http://127.0.0.1:8000/docs
 
 ### 4. Run automated tests and quality checks
 
@@ -75,7 +76,7 @@ python -m ruff format --check .
 
 ## Synthetic evaluation
 
-The evaluation suite measures drift detection under controlled conditions. Results are specific to the stated data-generating process, sample sizes, significance threshold, and random seeds.
+The repository contains multiple evaluations. Each measures a different aspect of detector behavior; their results should not be treated as interchangeable.
 
 ### Baseline drift evaluation
 
@@ -85,9 +86,7 @@ Run:
 python scripts/evaluate_drift.py
 ```
 
-The baseline experiment uses 100 trials, 200 samples per dataset, five numerical features, a location shift of `0.8`, random seed `42`, and significance level `0.05`.
-
-Observed baseline results:
+The recorded baseline experiment reported:
 
 | Metric | Result |
 |---|---:|
@@ -105,7 +104,7 @@ Run:
 python scripts/evaluate_scenarios.py
 ```
 
-This evaluation compares detector output against known synthetic labels and reports the confusion matrix and classification metrics.
+This evaluation compares detector output against known synthetic labels and reports a confusion matrix and classification metrics.
 
 The recorded experiment used 100 trials, 200 samples, five numerical features, a location shift of `0.8`, and significance level `0.05`.
 
@@ -122,6 +121,76 @@ The recorded experiment used 100 trials, 200 samples, five numerical features, a
 
 These perfect scores apply only to this particular synthetic experiment. They do not establish generalization to real-world data.
 
+### Distribution-change scenario evaluation
+
+Run the multi-seed evaluation:
+
+```powershell
+python scripts/evaluate_drift_scenarios.py
+```
+
+By default, the evaluator uses seeds `42`, `123`, and `2026`, with 100 trials per seed, 200 samples per feature, five numerical features, and significance level `0.05`.
+
+To specify the parameters explicitly:
+
+```powershell
+python scripts/evaluate_drift_scenarios.py --seeds 42 123 2026 --trials 100 --sample-size 200
+```
+
+The evaluation includes five scenarios:
+
+- **No drift:** all features follow the reference distribution.
+- **Location shift:** the target feature's mean is shifted.
+- **Variance increase:** the target feature's variance is increased.
+- **Heavy-tailed:** the target feature follows a variance-normalized Student's t distribution.
+- **Skewed:** the target feature follows a centered, right-skewed exponential distribution.
+
+In each positive scenario, only `feature_0` is deliberately changed. The other four features act as unchanged controls.
+
+#### Recorded results
+
+The following results were obtained with three seeds and 100 trials per seed, giving 300 trials per scenario.
+
+| Scenario | Target detections | Recall | 95% recall CI | Feature-level FPR |
+|---|---:|---:|---:|---:|
+| No drift | Not applicable | Not applicable | Not applicable | 0.53% |
+| Location shift | 300/300 | 100.0% | 98.7%–100.0% | 1.50% |
+| Variance increase | 56/300 | 18.7% | 14.7%–23.5% | 0.83% |
+| Heavy-tailed | 69/300 | 23.0% | 18.6%–28.1% | 0.75% |
+| Skewed | 234/300 | 78.0% | 73.0%–82.3% | 0.92% |
+
+The reported recall interval is the 95% Wilson score interval for target-feature detection across trials. Recall is not defined for the no-drift scenario because it has no positive ground-truth examples.
+
+In the no-drift scenario, there were eight false-positive feature predictions among 1,500 unchanged-feature evaluations. Eight of 300 trials had at least one false-positive control feature, resulting in a **2.67% trial-level family-wise false-positive rate** (95% Wilson CI: 1.36%–5.17%).
+
+#### Interpretation
+
+The detector was highly sensitive to the tested location shift at this sample size. Detection recall was substantially lower for variance increases and heavy-tailed data, while the tested skewed distribution had intermediate-to-high recall.
+
+These results demonstrate that detection power depends on the nature of the distribution change, not only on sample size and significance level. A detector that is sensitive to location shifts may be less sensitive to other distributional changes.
+
+#### Metric definitions
+
+- **Precision:** true positives divided by all positive predictions.
+- **Recall:** true positives divided by all positive ground-truth cases.
+- **F1:** harmonic mean of precision and recall.
+- **Feature-level false-positive rate:** false-positive feature predictions divided by all unchanged-feature predictions.
+- **Family-wise false-positive rate:** trials with at least one false-positive control feature divided by all no-change control trials.
+- **95% Wilson confidence interval:** an interval for a binomial proportion that behaves better than the basic normal approximation when observed proportions are near zero or one.
+
+Feature-level FPR and family-wise FPR use different denominators and should not be conflated. Feature outcomes within a trial may be dependent because the detector applies multiple-testing correction.
+
+#### Limitations of the experiment
+
+- Results come from seeded synthetic distributions, not production datasets.
+- Each positive scenario changes only one feature; simultaneous changes across many features may behave differently.
+- The experiment covers a single sample size, significance level, and set of distribution parameters.
+- Wilson intervals quantify binomial sampling uncertainty under the assumed trial model. They do not account for scenario selection, model assumptions, or mismatch with production data.
+- Distribution drift does not necessarily imply degraded predictive performance.
+- These evaluations do not measure downstream model quality, business impact, alerting effectiveness, or root-cause accuracy.
+
+Treat these results as a reproducible baseline, not a production performance guarantee.
+
 ### Drift evaluation matrix
 
 Run the full matrix:
@@ -130,60 +199,71 @@ Run the full matrix:
 python scripts/evaluate_drift_matrix.py
 ```
 
-The evaluator measures detection performance across five location-shift magnitudes, four sample sizes, and three random seeds.
+The matrix evaluates location-shift detection over combinations of shift magnitude, sample size, and random seed. It reports detection metrics for each configuration to make the relationship between effect size and sample size explicit.
 
-| Parameter | Values |
-|---|---|
-| Location shift | `0.0`, `0.2`, `0.5`, `0.8`, `1.2` |
-| Samples per dataset | `50`, `100`, `200`, `500` |
-| Random seeds | `42`, `123`, `2026` |
-| Trials per configuration | `100` |
-| Numerical features | `5` |
-| Significance level | `0.05` |
-| Configurations | `60` |
-| Total trials | `6,000` |
+The recorded matrix covered:
 
-The zero-shift configuration is the negative control. For positive shifts, `feature_0` is the target feature and the other features are unchanged. Metrics are calculated against these synthetic labels.
+- Shifts: `0`, `0.2`, `0.5`, `0.8`, and `1.2`
+- Sample sizes: `50`, `100`, `200`, and `500`
+- Seeds: `42`, `123`, and `2026`
+- Five numerical features
+- Significance level: `0.05`
+- 100 trials per configuration
 
-**Observed findings from the current run:**
+The matrix contains 60 configurations and 6,000 trials overall.
 
-- **Detection sensitivity increases with sample size and shift magnitude.** For shift `0.5`, recall ranged from `0.16–0.26` at 50 samples, `0.56–0.63` at 100 samples, `0.92–0.98` at 200 samples, and `1.00` at 500 samples across the three seeds.
-- **Small shifts are harder to detect.** For shift `0.2`, recall ranged from `0.01–0.03` at 50 samples to `0.49–0.60` at 500 samples.
-- **Larger shifts were consistently detected in this run.** For shift `0.8`, recall was `0.70–0.73` at 50 samples and at least `0.99` at 100 samples.
-- **Observed false-positive rates were low in these trials.** Across zero-shift controls, the false-positive rate ranged from `0.000–0.004` at the individual-seed configuration level. Positive-shift configurations had zero observed false positives in this run.
+Selected observed recall ranges across the three seeds:
 
-Precision is `null` when there are no positive predictions. In a zero-shift control, precision is `0.0` if false positives occur and `null` otherwise. Recall and F1 are `null` for the zero-shift control because there are no positive ground-truth examples. False-positive rate remains meaningful for this control.
+| Location shift | Sample size | Observed recall range |
+|---|---:|---:|
+| 0.2 | 50 | 1%–3% |
+| 0.2 | 100 | 7%–11% |
+| 0.2 | 200 | 15%–19% |
+| 0.2 | 500 | 49%–60% |
+| 0.5 | 50 | 16%–26% |
+| 0.5 | 100 | 56%–63% |
+| 0.5 | 200 | 92%–98% |
+| 0.5 | 500 | 100% |
+| 0.8 | 50 | 70%–73% |
+| 0.8 | 100 | 99%–100% |
+| 0.8 | 200 | 100% |
+| 0.8 | 500 | 100% |
+| 1.2 | 50 | 98%–100% |
+| 1.2 | 100 or more | 100% |
 
-**Limitations:** These results describe seeded synthetic normal distributions with a location shift. They do not establish performance on non-normal distributions, changes in variance, real production data, or downstream model degradation. The three seeds provide a limited view of variability; observed rates are not guarantees.
+Across zero-shift controls, the observed false-positive rate ranged from `0.000` to `0.004` at the individual-seed configuration level. Positive-shift configurations had zero observed false positives in this run.
+
+These measurements are finite-sample observations from synthetic normal distributions with location shifts. They do not establish performance on non-normal distributions, variance changes, real production data, or downstream model degradation. Three seeds provide only a limited view of variability; observed rates are not guarantees.
 
 ## Statistical and operational limitations
 
-- A statistically significant distribution change does not necessarily imply degraded model performance.
-- Detection power depends on effect size, sample size, distribution assumptions, and significance thresholds.
-- Evaluating multiple features introduces multiple-testing considerations.
-- Synthetic evaluation cannot substitute for validation against representative production data.
-- Incident recommendations identify investigation steps; they do not establish root cause.
+- Statistical significance of a distribution change does not establish that model performance has degraded.
+- Detection power depends on effect size, sample size, distribution characteristics, and threshold settings.
+- Multiple features require appropriate multiple-testing considerations.
+- Synthetic evaluation cannot substitute for validation on representative data.
+- Incident recommendations are investigation steps, not confirmed root causes.
 - The service does not automatically retrain, modify, or deploy models.
-
-Before production use, calibrate thresholds against representative data, measure latency and resource use, establish alerting policies, and validate operational failure handling.
+- Before production use, calibrate thresholds on representative data and measure latency, resource usage, alert quality, and failure behavior.
+- Confidence intervals describe uncertainty under their statistical assumptions; they do not guarantee production outcomes.
 
 ## Development principles
 
-- Keep detector logic independent of transport and API concerns.
-- Make evaluation runs reproducible through explicit seeds and documented parameters.
-- Test negative controls, failure paths, and invalid inputs.
-- Avoid logging raw records or unnecessary sensitive values.
-- Treat benchmarks as measured evidence, not universal guarantees.
-- Prefer explicit contracts and reviewable changes over implicit behavior.
+- Keep the detector independent from the API layer.
+- Make evaluation parameters and random seeds explicit.
+- Test negative cases, failure paths, and invalid inputs.
+- Avoid logging raw sensitive data.
+- Treat benchmarks as evidence, not guarantees.
+- Validate changes with automated tests and quality checks before merging.
 
 ## Roadmap
 
-- Expand evaluation to variance shifts and non-normal distributions.
-- Quantify runtime and memory behavior as sample size and feature count increase.
-- Evaluate multiple-testing corrections.
-- Improve operational observability and incident lifecycle handling.
-- Validate detection thresholds against representative datasets.
+- Extend evaluation to additional variance and non-normal distribution changes.
+- Measure runtime and memory consumption across sample sizes and feature counts.
+- Expand testing of multiple-testing behavior and correlated features.
+- Add operational observability and incident-triage capabilities.
+- Validate against representative, appropriately governed real-world data.
+- Evaluate alert quality and downstream model-performance impact.
 
 ## License
 
-No license has been specified yet. Check the repository for an applicable license before reusing or redistributing the project.
+No license has been specified yet. Add a `LICENSE` file before presenting the repository as open source.

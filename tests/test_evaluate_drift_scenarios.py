@@ -7,7 +7,9 @@ import math
 import pytest
 from scripts.evaluate_drift_scenarios import (
     SCENARIOS,
+    aggregate_scenario_results,
     evaluate_scenario,
+    wilson_interval,
 )
 
 
@@ -21,7 +23,7 @@ def run_scenario(
     alpha: float = 0.05,
 ) -> dict[str, str | int | float | None]:
     """Run a named scenario using deterministic parameters."""
-    scenario = next(scenario for scenario in SCENARIOS if scenario.name == scenario_name)
+    scenario = next(item for item in SCENARIOS if item.name == scenario_name)
     return evaluate_scenario(
         scenario=scenario,
         seed=seed,
@@ -41,28 +43,30 @@ def test_scenario_names_are_unique() -> None:
 
 
 def test_evaluation_is_reproducible() -> None:
-    first = run_scenario()
-    second = run_scenario()
-
-    assert first == second
+    assert run_scenario() == run_scenario()
 
 
 def test_confusion_counts_cover_all_feature_trial_pairs() -> None:
+    trials = 4
+    feature_count = 5
     result = run_scenario(
         scenario_name="variance_increase",
-        trials=4,
+        trials=trials,
         sample_size=100,
-        feature_count=5,
+        feature_count=feature_count,
     )
 
-    total = (
-        result["true_positives"]
-        + result["false_positives"]
-        + result["true_negatives"]
-        + result["false_negatives"]
+    total = sum(
+        result[key]
+        for key in (
+            "true_positives",
+            "false_positives",
+            "true_negatives",
+            "false_negatives",
+        )
     )
 
-    assert total == 4 * 5
+    assert total == trials * feature_count
 
 
 def test_no_drift_scenario_has_no_positive_ground_truth() -> None:
@@ -78,6 +82,91 @@ def test_no_drift_scenario_has_no_positive_ground_truth() -> None:
     assert result["true_negatives"] + result["false_positives"] == 20
     assert result["recall"] is None
     assert result["f1"] is None
+    assert result["target_trial_count"] == 0
+
+
+def test_wilson_interval_for_zero_successes_is_bounded() -> None:
+    interval = wilson_interval(0, 20)
+
+    assert interval is not None
+    assert interval[0] == 0.0
+    assert 0.0 < interval[1] < 1.0
+
+
+def test_wilson_interval_for_all_successes_is_bounded() -> None:
+    interval = wilson_interval(20, 20)
+
+    assert interval is not None
+    assert 0.0 < interval[0] < 1.0
+    assert interval[1] == 1.0
+
+
+def test_wilson_interval_returns_none_for_zero_trials() -> None:
+    assert wilson_interval(0, 0) is None
+
+
+@pytest.mark.parametrize(
+    ("successes", "trials", "message"),
+    [
+        (-1, 10, "successes must be between"),
+        (11, 10, "successes must be between"),
+        (0, -1, "trials must be >= 0"),
+    ],
+)
+def test_wilson_interval_rejects_invalid_counts(
+    successes: int,
+    trials: int,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        wilson_interval(successes, trials)
+
+
+@pytest.mark.parametrize("z", [0.0, -1.0, math.nan, math.inf])
+def test_wilson_interval_rejects_invalid_z(z: float) -> None:
+    with pytest.raises(ValueError, match="z must be finite"):
+        wilson_interval(1, 10, z=z)
+
+
+def test_aggregate_results_combines_seeds_and_reports_intervals() -> None:
+    scenario = next(item for item in SCENARIOS if item.name == "location_shift")
+    results = [
+        evaluate_scenario(
+            scenario=scenario,
+            seed=seed,
+            trials=5,
+            sample_size=100,
+            feature_count=5,
+            alpha=0.05,
+        )
+        for seed in (42, 123)
+    ]
+
+    aggregate = aggregate_scenario_results(
+        scenario=scenario,
+        results=results,
+    )
+
+    assert aggregate["seeds"] == [42, 123]
+    assert aggregate["total_trials"] == 10
+    assert aggregate["target_trial_count"] == 10
+    assert aggregate["recall_ci_95"] is not None
+    assert aggregate["familywise_false_positive_rate_ci_95"] is not None
+
+
+def test_aggregate_rejects_empty_results() -> None:
+    scenario = SCENARIOS[0]
+
+    with pytest.raises(ValueError, match="at least one run"):
+        aggregate_scenario_results(scenario=scenario, results=[])
+
+
+def test_aggregate_rejects_mismatched_scenario_names() -> None:
+    scenario = SCENARIOS[0]
+    result = run_scenario(scenario_name="location_shift")
+
+    with pytest.raises(ValueError, match="requested scenario"):
+        aggregate_scenario_results(scenario=scenario, results=[result])
 
 
 @pytest.mark.parametrize(
@@ -105,7 +194,6 @@ def test_invalid_parameters_raise_value_error(
         "alpha": 0.05,
     }
     kwargs[parameter] = value
-
     scenario = SCENARIOS[0]
 
     with pytest.raises(ValueError, match=message):
