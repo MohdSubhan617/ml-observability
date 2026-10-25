@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from ml_observability.drift import detect_numerical_drift
+from ml_observability.incidents import build_incident
 from ml_observability.monitoring import validate_schema
 
 app = FastAPI(
@@ -70,7 +71,7 @@ def validate_datasets(request: ValidationRequest) -> dict[str, Any]:
 
 @app.post("/drift", tags=["monitoring"])
 def detect_drift(request: DriftRequest) -> dict[str, Any]:
-    """Evaluate numerical feature drift and return adjusted statistical results."""
+    """Evaluate numerical drift and emit evidence-backed incidents."""
     try:
         results = detect_numerical_drift(
             pd.DataFrame(request.reference),
@@ -80,6 +81,42 @@ def detect_drift(request: DriftRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    incidents = []
+    for result in results:
+        if result.status != "evaluated" or result.drift_detected is not True:
+            continue
+
+        incidents.append(
+            build_incident(
+                detector="ks_test",
+                category="feature_drift",
+                scope=result.feature,
+                severity="info",
+                observed_metrics={
+                    "reference_count": result.reference_count,
+                    "current_count": result.current_count,
+                    "statistic": result.statistic,
+                    "p_value": result.p_value,
+                    "adjusted_p_value": result.adjusted_p_value,
+                },
+                thresholds={"alpha": request.alpha},
+                evidence=(
+                    f"Feature {result.feature!r} differs between reference "
+                    f"and current distributions (KS statistic={result.statistic}, "
+                    f"adjusted p-value={result.adjusted_p_value}).",
+                ),
+                recommended_steps=(
+                    "Inspect recent upstream data and feature-generation changes.",
+                    "Assess whether the observed shift affects model performance.",
+                ),
+                limitations=(
+                    "Distributional difference alone does not establish root cause "
+                    "or model-performance impact.",
+                    "Severity is informational until an operational impact policy is defined.",
+                ),
+            )
+        )
 
     return {
         "alpha": request.alpha,
@@ -97,5 +134,21 @@ def detect_drift(request: DriftRequest) -> dict[str, Any]:
                 "reason": result.reason,
             }
             for result in results
+        ],
+        "incidents": [
+            {
+                "incident_id": incident.incident_id,
+                "detector": incident.detector,
+                "category": incident.category,
+                "scope": incident.scope,
+                "severity": incident.severity,
+                "status": incident.status,
+                "observed_metrics": dict(incident.observed_metrics),
+                "thresholds": dict(incident.thresholds),
+                "evidence": list(incident.evidence),
+                "recommended_steps": list(incident.recommended_steps),
+                "limitations": list(incident.limitations),
+            }
+            for incident in incidents
         ],
     }

@@ -113,3 +113,46 @@ def test_drift_endpoint_rejects_invalid_alpha() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_drift_endpoint_returns_incident_for_detected_drift() -> None:
+    reference = [{"value": float(index)} for index in range(100)]
+    current = [{"value": float(index + 1000)} for index in range(100)]
+
+    response = client.post(
+        "/drift",
+        json={"reference": reference, "current": current},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "incidents" in body
+    assert len(body["incidents"]) == 1
+
+    incident = body["incidents"][0]
+    assert incident["incident_id"].startswith("inc_")
+    assert incident["detector"] == "ks_test"
+    assert incident["category"] == "feature_drift"
+    assert incident["scope"] == "value"
+    assert incident["severity"] in {"info", "low", "medium", "high", "critical"}
+    assert incident["status"] == "open"
+    assert incident["observed_metrics"]["adjusted_p_value"] < body["alpha"]
+    assert incident["thresholds"]["alpha"] == body["alpha"]
+    assert incident["evidence"]
+    assert incident["recommended_steps"]
+    assert incident["limitations"]
+
+
+def test_drift_endpoint_does_not_emit_incident_for_unevaluated_feature() -> None:
+    response = client.post(
+        "/drift",
+        json={
+            "reference": [{"value": 1.0}, {"value": 2.0}],
+            "current": [{"value": 100.0}, {"value": 200.0}],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["features"][0]["status"] == "not_evaluated"
+    assert body["incidents"] == []
