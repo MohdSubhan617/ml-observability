@@ -63,7 +63,7 @@ def _observations(
                 kind="feature_drift",
                 evidence_id=f"{prefix}-drift-{index}-{seed}",
                 feature=result.feature,
-                status=result.status,  # type: ignore[arg-type]
+                status=result.status,
                 drift_detected=result.drift_detected,
                 adjusted_p_value=result.adjusted_p_value,
                 alpha=0.05,

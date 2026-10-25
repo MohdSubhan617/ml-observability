@@ -1,6 +1,7 @@
 """Numerical feature drift detection using KS tests and FDR correction."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,7 @@ class FeatureDriftResult:
     """Statistical drift result for one feature."""
 
     feature: str
-    status: str
+    status: Literal["evaluated", "not_evaluated"]
     reference_count: int
     current_count: int
     statistic: float | None

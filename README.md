@@ -15,6 +15,49 @@ The project emphasizes reproducible evaluation, explicit limitations, automated 
 - Multi-seed evaluation with 95% Wilson confidence intervals for selected metrics.
 - Automated tests, linting, and formatting checks.
 
+## Quickstart: synthetic end-to-end demo
+
+Install the project in a Python 3.13 virtual environment, then run the complete synthetic
+monitoring-to-investigation walkthrough:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+python scripts/run_demo.py
+```
+
+The demo creates seeded reference and current datasets, injects an account-age shift, null
+values, and an unexpected column, then runs schema validation, drift detection, incident
+creation, and evidence-based investigation. It prints a concise Markdown report. Save the
+complete structured result with `python scripts/run_demo.py --json-output demo-report.json`.
+Seed `42` is used by default. The demo exercises component integration; it does not call the
+HTTP service or establish production detector quality. See
+[`docs/design-notes/evidence-boundary.md`](docs/design-notes/evidence-boundary.md) for the
+composition and evidence-boundary trade-offs.
+
+## Measured synthetic baseline
+
+The recorded detector evaluation uses seeds `42`, `123`, and `2026`, 100 trials per seed,
+200 samples, five features, and `alpha=0.05` (300 trials per scenario). Target-feature recall
+was `300/300` for the tested location shift, `56/300` for variance increase, `69/300` for
+heavy tails, and `234/300` for skew. No-drift controls had `8/1,500` false-positive feature
+predictions and `8/300` trials with at least one such prediction. In the seed-42 investigator
+fixture, top-1 accuracy was `3/3`, multi-cause hit-at-3 was `2/2`, and first-match baseline
+metrics were identical. These are synthetic contract and detector measurements, not
+production effectiveness claims; detailed methods and limitations are in
+[Distribution-change scenario evaluation](#distribution-change-scenario-evaluation) and
+[Investigator evaluation](#investigator-evaluation).
+
+## Data and security boundary
+
+The API accepts bounded JSON datasets and caller-supplied investigator evidence; it does not
+persist analyses or authenticate evidence provenance. Request bodies default to a 2 MB limit,
+and dataset dimensions are bounded. Application logs record investigation counts and outcomes,
+not raw records. The detector reports statistical distribution differences, not model-quality
+impact or root cause. See [operational limits](#getting-started) and the
+[architecture notes](docs/architecture.md).
+
 ## Architecture
 
 The service separates the detector from its API layer:
