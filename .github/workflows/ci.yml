@@ -53,5 +53,8 @@ jobs:
       - name: Smoke test drift method comparison
         run: python scripts/evaluate_drift_methods.py --seeds 42 --trials 1 --sample-sizes 20 --location-shifts 0.8 --variance-scales 1.5 --feature-count 2
 
+      - name: Smoke test failure investigator evaluation
+        run: python scripts/evaluate_investigator.py --seed 42
+
       - name: Run tests
         run: python -m pytest -q

@@ -20,6 +20,7 @@ def test_openapi_schema_is_available() -> None:
 
     assert response.status_code == 200
     assert response.json()["info"]["title"] == "ML Observability"
+    assert "/investigate" in response.json()["paths"]
 
 
 def test_validate_endpoint_accepts_valid_datasets() -> None:
@@ -258,3 +259,105 @@ def test_drift_endpoint_does_not_emit_incident_for_unevaluated_feature() -> None
     body = response.json()
     assert body["features"][0]["status"] == "not_evaluated"
     assert body["incidents"] == []
+
+
+def test_investigate_endpoint_ranks_supplied_drift_evidence() -> None:
+    response = client.post(
+        "/investigate",
+        json={
+            "evidence": [
+                {
+                    "kind": "feature_drift",
+                    "evidence_id": "drift-1",
+                    "feature": "age",
+                    "status": "evaluated",
+                    "drift_detected": True,
+                    "adjusted_p_value": 0.001,
+                    "alpha": 0.05,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["diagnostic_version"] == "1"
+    assert body["hypotheses"][0]["category"] == "feature_distribution_shift"
+    assert body["hypotheses"][0]["supporting_evidence"][0]["evidence_id"] == "drift-1"
+    assert body["abstained"] is False
+
+
+def test_investigate_endpoint_accepts_normalized_existing_endpoint_results() -> None:
+    response = client.post(
+        "/investigate",
+        json={
+            "evidence": [
+                {
+                    "kind": "schema_validation",
+                    "evidence_id": "schema-1",
+                    "is_valid": False,
+                    "missing_columns": ["campaign"],
+                    "unexpected_columns": [],
+                    "missing_values": {"region": 2},
+                },
+                {
+                    "kind": "feature_drift",
+                    "evidence_id": "drift-1",
+                    "feature": "age",
+                    "status": "evaluated",
+                    "reference_count": 100,
+                    "current_count": 100,
+                    "statistic": 0.5,
+                    "p_value": 0.001,
+                    "adjusted_p_value": 0.001,
+                    "drift_detected": True,
+                    "reason": None,
+                    "alpha": 0.05,
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert {item["category"] for item in response.json()["hypotheses"]} == {
+        "feature_distribution_shift",
+        "schema_contract_violation",
+        "missingness",
+    }
+
+
+def test_investigate_endpoint_abstains_without_supported_evidence() -> None:
+    response = client.post("/investigate", json={"evidence": []})
+
+    assert response.status_code == 200
+    assert response.json()["hypotheses"] == []
+    assert response.json()["abstained"] is True
+
+
+def test_investigate_endpoint_rejects_unknown_signal_and_extra_fields() -> None:
+    response = client.post(
+        "/investigate",
+        json={"evidence": [{"kind": "concept_drift", "evidence_id": "x", "secret": "redact-me"}]},
+    )
+
+    assert response.status_code == 422
+    assert "redact-me" not in response.text
+
+
+def test_investigate_endpoint_enforces_evidence_collection_limit() -> None:
+    evidence = [
+        {
+            "kind": "feature_drift",
+            "evidence_id": f"drift-{index}",
+            "feature": f"feature-{index}",
+            "status": "evaluated",
+            "drift_detected": True,
+            "adjusted_p_value": 0.001,
+            "alpha": 0.05,
+        }
+        for index in range(201)
+    ]
+
+    response = client.post("/investigate", json={"evidence": evidence})
+
+    assert response.status_code == 422

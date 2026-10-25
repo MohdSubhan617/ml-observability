@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import logging
 import os
 from typing import Any
 
@@ -12,11 +13,16 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ml_observability.drift import detect_numerical_drift
 from ml_observability.incidents import build_incident
+from ml_observability.investigator import (
+    InvestigationRequest,
+    InvestigationResult,
+    investigate,
+)
 from ml_observability.monitoring import validate_schema
 
 app = FastAPI(
     title="ML Observability",
-    description="ML data drift detection and evidence-based incident triage.",
+    description="ML data drift detection and evidence-based failure investigation.",
     version="0.1.0",
 )
 
@@ -130,6 +136,7 @@ class RequestBodyLimitMiddleware:
 
 
 app.add_middleware(RequestBodyLimitMiddleware)
+logger = logging.getLogger(__name__)
 
 
 @app.exception_handler(RequestValidationError)
@@ -287,3 +294,20 @@ def detect_drift(request: DriftRequest) -> dict[str, Any]:
             for incident in incidents
         ],
     }
+
+
+@app.post(
+    "/investigate",
+    tags=["diagnostics"],
+    response_model=InvestigationResult,
+)
+def investigate_failure(request: InvestigationRequest) -> InvestigationResult:
+    """Rank hypotheses from supplied schema and feature-drift observations."""
+    result = investigate(request)
+    logger.info(
+        "Investigation completed: evidence_count=%d abstained=%s hypothesis_count=%d",
+        len(request.evidence),
+        result.abstained,
+        len(result.hypotheses),
+    )
+    return result

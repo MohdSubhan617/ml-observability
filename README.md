@@ -9,7 +9,8 @@ The project emphasizes reproducible evaluation, explicit limitations, automated 
 - Numerical drift detection using the two-sample Kolmogorov–Smirnov (KS) test.
 - Benjamini–Hochberg false-discovery-rate correction across evaluated numerical features.
 - Input validation and explicit handling of insufficient samples.
-- FastAPI endpoints for drift analysis and health checks.
+- FastAPI endpoints for validation, drift analysis, failure investigation, and health checks.
+- Deterministic ML failure investigation from supplied schema and drift findings.
 - Synthetic evaluations with known labels and multiple distribution-change scenarios.
 - Multi-seed evaluation with 95% Wilson confidence intervals for selected metrics.
 - Automated tests, linting, and formatting checks.
@@ -25,6 +26,146 @@ The service separates the detector from its API layer:
 5. **Tests and quality checks:** validate expected behavior, input handling, reproducibility, and regression safety.
 
 The detector does not automatically retrain, modify, or deploy models. Drift alerts are signals for further investigation, not proof of model degradation or root cause.
+
+The failure investigator ranks only schema/contract violations, observed missingness, and
+feature distribution shifts supported by supplied results from this service. It is a
+diagnostic layer over evidence, not a causal model or a quality monitor. Prediction changes,
+model versions, pipeline health, labels, and outcome metrics are not currently collected.
+
+## ML Failure Investigator
+
+`POST /investigate` accepts a bounded list of normalized observations derived from the
+existing `/validate` and `/drift` outputs. The caller adds a `kind` and stable, unique
+`evidence_id` to each observation and copies the `/drift` response's top-level `alpha` onto
+each feature result. It does not access historical incidents or run detectors itself. The
+caller must associate supplied evidence with the same analysis window. The request supports
+at most 200 evidence records, 100 columns
+per schema result, and 128-character feature or column names. Unknown fields and signal kinds
+are rejected with HTTP 422; the existing 2 MB request-body limit applies.
+
+Example request for a synthetic multi-signal incident:
+
+```json
+{
+  "evidence": [
+    {
+      "kind": "feature_drift",
+      "evidence_id": "drift-2026-10-25-001",
+      "feature": "account_age_days",
+      "status": "evaluated",
+      "drift_detected": true,
+      "adjusted_p_value": 0.004,
+      "alpha": 0.05
+    },
+    {
+      "kind": "feature_drift",
+      "evidence_id": "drift-2026-10-25-002",
+      "feature": "transaction_amount",
+      "status": "evaluated",
+      "drift_detected": true,
+      "adjusted_p_value": 0.012,
+      "alpha": 0.05
+    },
+    {
+      "kind": "schema_validation",
+      "evidence_id": "validation-2026-10-25-001",
+      "missing_columns": ["campaign_id"],
+      "unexpected_columns": [],
+      "missing_values": {"region": 12}
+    }
+  ]
+}
+```
+
+Send it to the local service with:
+
+```powershell
+$body = @'
+{"evidence":[{"kind":"feature_drift","evidence_id":"drift-001","feature":"account_age_days","status":"evaluated","drift_detected":true,"adjusted_p_value":0.004,"alpha":0.05},{"kind":"feature_drift","evidence_id":"drift-002","feature":"transaction_amount","status":"evaluated","drift_detected":true,"adjusted_p_value":0.012,"alpha":0.05},{"kind":"schema_validation","evidence_id":"validation-001","missing_columns":["campaign_id"],"unexpected_columns":[],"missing_values":{"region":12}}]}
+'@
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/investigate `
+  -ContentType 'application/json' -Body $body
+```
+
+The result contains a deterministic `analysis_id`, diagnostic contract version, ranked
+hypotheses, evidence references, supporting and contradictory observations, heuristic score,
+evidence-strength label, and missing signal recommendations. The current supported
+hypotheses are:
+
+| Hypothesis | Required supplied observation |
+|---|---|
+| `feature_distribution_shift` | An evaluated `/drift` feature result with `drift_detected: true` |
+| `schema_contract_violation` | Missing or unexpected columns from `/validate` |
+| `missingness` | One or more positive null counts from `/validate` |
+
+No hypothesis is emitted for an unevaluated drift result, a clean schema result, or missing
+evidence. Contradictory decisions for the same feature are both cited and cause abstention.
+When multiple causes are independently supported, all are returned; equal scores use the
+fixed order `feature_distribution_shift`, `schema_contract_violation`, `missingness`.
+An `analysis_id` is a stable hash of the normalized supplied evidence, not a persisted
+incident identifier.
+
+In this synthetic example, the two distinct drifted features produce a score of five for
+`feature_distribution_shift`. The missing column and null count each produce a score of four
+for `schema_contract_violation` and `missingness`; their tie uses the documented category
+order. The response therefore ranks feature shift first while retaining all three supported
+findings. This ordering reflects the heuristic only and does not establish that drift caused
+model degradation.
+
+Scores are rule-based heuristic points, not probabilities. Four points represent the first
+distinct supporting feature/column, with one additional point per further distinct scope,
+capped at ten. Each contradictory reference subtracts three points. Repeated findings about
+the same scope do not increase the score. Strength labels describe this rule support only:
+`limited` for conflict or a score below four, `moderate` for scores four through seven and
+for a score of eight or more with fewer than two distinct evidence records, and `strong` for
+a score of eight or more supported by at least two distinct evidence records. The labels have
+not been statistically calibrated. Ties are resolved
+deterministically and do not hide independently supported hypotheses. The investigator
+abstains when no supported finding exists or supplied evidence conflicts.
+
+### Investigator evaluation
+
+Run the deterministic synthetic scenarios and write machine-readable JSON when desired:
+
+```powershell
+python scripts/evaluate_investigator.py --seed 42
+python scripts/evaluate_investigator.py --seed 42 --json-output investigator-results.json
+```
+
+The ten scenarios cover single feature shift, missingness, schema failure, two unsupported
+signal families (prediction anomaly and model-version change), simultaneous findings, equal
+score co-occurring findings, conflicting same-feature results, insufficient samples, and
+normal operation. Synthetic tabular inputs are passed through the current schema and drift
+detectors; the unsupported cases deliberately supply no unsupported signal.
+
+For seed `42`, single-target top-1 accuracy was `3/3`; top-3 hit rate for multi-cause cases
+was `2/2`; mean reciprocal rank was `1.00` over five rankable scenarios; abstention precision
+and recall were both `1.00` (`5/5` each); normal-operation false-positive diagnosis rate was
+`0/1`; evidence-grounding violations were `0/10` references; and unsupported-category
+diagnoses were `0/2` unsupported scenarios. Each metric denominator is printed and included
+in JSON. Abstention metrics treat the five conflicting, unsupported,
+insufficient, and normal scenarios as expected abstentions; rank metrics include the three
+single-cause and two multiple-cause scenarios. The unranked baseline orders the same
+supported hypotheses by category name, so it had identical top-1, top-3, and MRR results on
+this fixture. This small, hand-authored synthetic suite establishes contract behavior only;
+it does not show improved diagnostic quality on real incidents or representative production
+data.
+
+### Diagnostic data flow
+
+```mermaid
+flowchart LR
+    V[POST /validate result] --> I[POST /investigate]
+    D[POST /drift feature results] --> I
+    I --> R[Ranked, evidence-linked hypotheses]
+    I --> A[Abstention and missing-signal guidance]
+```
+
+The supplied findings are claims from the caller and are not authenticated by the investigator.
+The feature distribution hypothesis reports a statistical difference, not its cause or an
+impact on model quality. Model quality degradation or concept drift requires outcome/label
+evidence that this project does not currently model. The current contract also cannot diagnose
+prediction anomalies, model/version changes, or upstream pipeline failures.
 
 ## Technology stack
 
